@@ -1,0 +1,97 @@
+-- Code your design here
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.numeric_Std.all ; 
+use IEEE.math_real.all ;
+
+
+entity transposed_Fir is
+	generic (
+    INPUT_WIDTH : integer range 8 to 25 := 24 ; --sepse dsp slice ka multiplier 25 x 8 dhe output max e ka 43 ndaj ne dona me perdor dsp slicet pranda duhet mos me i exceed ato vlera
+    COEFF_WIDTH : integer range 8 to 18 := 8 ;
+    OUT_WIDTH : integer range 8 to 43 := 24 ; -- it says should me smaller than coeff + input-1 width not sure why
+    TAPS : integer := 60 ;
+    
+    
+    );
+    port (
+    --================INPUTS========================
+    data_in : in std_logic_vector ( INPUT_WIDTH - 1 downto 0 ) ;
+    clk , reset : in std_logic ;
+    --=================OUTPUT========================
+    data_out : out std_logic_vector ( OUT_WIDTH - 1 downto 0 )
+    
+    );
+end entity transposed_fir ;
+
+architecture rtl of transposed_fir is
+
+--=======FIRST STAGE PIPELINE============-
+type pipe1 is array ( 0 to TAPS - 1 ) of signed ( INPUT_WIDTH - 1 downto 0 );
+signal reg_1 : pipe1 := ( others => ( others => '0'));
+--========SECOND STAGE PIPELINE============
+--=====Stage after multiplication so the width should be input widht + coeff width - 1
+type pipe2 is array ( 0 to TAPS - 1 ) of signed ( INPUT_WIDTH + COEFF_WIDTH - 1 downto 0 );
+signal reg_2 : pipe2 := ( others => (others => '0')) ;
+
+--=======THIRD STAGE PIPELINE==============
+--stage after addition , technically the last stage so th addition of all multiplications and previous additions so
+--max width INPUT_WIDTH + COEFF_WIDTH - 1 + log2 tap , sepse log2 percakton sa shtresa dyshesh do krijohen dhe per cdo shtres
+-- plus 1 bit , sepse first layer , tap / 2 , second layer ( tap / 2 ) / 2 dyshe e kshu me rradh pra numri i shtresave nga log per cdo shtres dalja do et + 1 , i guess ceil rounding to prevent overflow , just in case for security
+type pipe3 is array ( 0 to TAPS- 1) of signed ( INPUT_WIDTH + COEFF_WIDTH + integer ( ceil ( log2 ( real ( TAPS ) ) )) - 1 downto 0 ) ; 
+-- gjithmon integer ceil lof2 real sepse per mbledhjen duhet integer
+signal reg_3 : pipe3 := ( others => ( others => '0' ) ) ;
+--a bit of shperdorim sepse jo cdo reg duhet te ket kete width
+--we dont take into account the fixed point representation but we are sure that there will be consistency so all coff x.y format so the results will always be aligned no need to manipulate before addition
+
+type coeff  is array ( 0 to TAPS - 1 ) of signed ( COEFF_WIDTH - 1 downto 0  ) ;
+signal coeff_data : coeff :=( 
+  
+-- 500Hz Blackman LPF , x stands for hexadecimal 
+x"0000", x"0001", x"0005", x"000C", 
+x"0016", x"0025", x"0037", x"004E", 
+x"0069", x"008B", x"00B2", x"00E0", 
+x"0114", x"014E", x"018E", x"01D3", 
+x"021D", x"026A", x"02BA", x"030B", 
+x"035B", x"03AA", x"03F5", x"043B", 
+x"047B", x"04B2", x"04E0", x"0504", 
+x"051C", x"0528", x"0528", x"051C", 
+x"0504", x"04E0", x"04B2", x"047B", 
+x"043B", x"03F5", x"03AA", x"035B", 
+x"030B", x"02BA", x"026A", x"021D", 
+x"01D3", x"018E", x"014E", x"0114", 
+x"00E0", x"00B2", x"008B", x"0069", 
+x"004E", x"0037", x"0025", x"0016", 
+x"000C", x"0005", x"0001", x"0000");
+
+--=====================ENABLING DSP INFERRING FOR THE ARCHITECTURE====
+attribute use_dsp : string ; -- fixed names i guess
+attribute use_dsp of rtl : architecture is "yes" ;
+begin
+
+process ( clk ) 
+begin
+
+if rising_Edge ( clk ) then
+	if reset = '1' then
+    	reg_1 <= ( others => ( others => '0' ) ) ;
+        reg_2 <= ( others => ( others => '0' ) ) ;
+        reg_3 <= ( others => ( others => '0' ) ) ;
+	else
+    --=============FIRST PIPELINE STAGE=================
+    	for i in 0 to TAPS - 1 loop
+        reg_1 ( i ) <= signed ( data_in ) ; 
+        --a waste of resources since all will have the same value so maybe better one ff that is shared between each step of fir 	filter , drawback it will have high fan out , it limits the frequency performance
+        end loop ;
+     --==============SECOND PIPELINE STAGE multiplication ==============   
+        for i in 0 to TAPS - 1 loop 
+        reg_2 ( i) <= reg_1 ( i ) * coeff_data ( i ) ; -- teknikisht coeff_Data ( 0 ) is for the latest stage so the stage closer to the output , convolution
+        end loop ;
+	--=======THIRD PIPELINE STAGE ADDITION ==================
+    reg_3 ( TAPS - 1 ) <= reg_2 ( TAPS - 1 ) ;
+    for i in TAPS - 2 downto 0 loop
+    reg_3 ( i ) <= reg_3 ( i + 1 ) + reg_2 ( i ) ;
+    end loop ;
+  end if ;
+end if ;
+end process ;
